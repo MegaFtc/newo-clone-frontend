@@ -17,6 +17,7 @@
 import express from "express";
 import session from "express-session";
 import fetch from "node-fetch";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -26,6 +27,19 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 const SESSION_SECRET = process.env.SESSION_SECRET;
 const PORT = process.env.PORT || 3000;
 const CLIENT_DIST = process.env.CLIENT_DIST || path.join(__dirname, "..", "client", "dist");
+
+// Node.js, в отличие от Python/httpx, НЕ подхватывает HTTPS_PROXY
+// автоматически для встроенного fetch. Внешние домены (api.telegram.org
+// и т.п.) на этой сети требуют прокси — тот же самый, что уже настроен
+// для git/pip/apt. Запросы к самому бэкенду (BACKEND_URL, обычно
+// 127.0.0.1 или внутренний IP) идут БЕЗ прокси — незачем заворачивать
+// локальный трафик через внешний прокси-сервер.
+const EXTERNAL_PROXY = process.env.HTTPS_PROXY || process.env.https_proxy || null;
+const externalProxyAgent = EXTERNAL_PROXY ? new HttpsProxyAgent(EXTERNAL_PROXY) : undefined;
+
+function fetchExternal(url, options = {}) {
+  return fetch(url, { ...options, agent: externalProxyAgent });
+}
 
 if (!SESSION_SECRET) {
   console.error(
@@ -201,13 +215,13 @@ function sleep(ms) {
 async function sendTelegramMessage(chatId, text) {
   if (!TELEGRAM_API) return;
   try {
-    await fetch(`${TELEGRAM_API}/sendMessage`, {
+    await fetchExternal(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text }),
     });
   } catch (err) {
-    console.error("Ошибка отправки сообщения в Telegram:", err.message);
+    console.error("Ошибка отправки сообщения в Telegram:", err.message, err.cause ?? "");
   }
 }
 
@@ -233,7 +247,7 @@ async function handleTelegramMessage(message) {
       : "Извините, сервис временно недоступен. Попробуйте позже.";
     await sendTelegramMessage(chatId, replyText);
   } catch (err) {
-    console.error("Ошибка обработки Telegram-сообщения:", err.message);
+    console.error("Ошибка обработки Telegram-сообщения:", err.message, err.cause ?? "");
     await sendTelegramMessage(chatId, "Извините, сервис временно недоступен. Попробуйте позже.");
   }
 }
@@ -253,7 +267,7 @@ async function startTelegramPolling() {
       // 30 секунд, если нет новых сообщений, вместо мгновенного пустого
       // ответа. Это резко снижает частоту запросов по сравнению с обычным
       // "спроси и сразу получи пустой ответ" каждую секунду.
-      const res = await fetch(`${TELEGRAM_API}/getUpdates?timeout=30&offset=${telegramOffset}`);
+      const res = await fetchExternal(`${TELEGRAM_API}/getUpdates?timeout=30&offset=${telegramOffset}`);
       const data = await res.json();
 
       if (!data.ok) {
@@ -269,7 +283,7 @@ async function startTelegramPolling() {
         }
       }
     } catch (err) {
-      console.error("Ошибка Telegram polling:", err.message);
+      console.error("Ошибка Telegram polling:", err.message, err.cause ?? "");
       await sleep(5000); // не долбим API при сетевых сбоях без паузы
     }
   }
