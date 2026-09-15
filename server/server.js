@@ -177,4 +177,100 @@ app.get(/(.*)/, (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Frontend server запущен на порту ${PORT}, бэкенд: ${BACKEND_URL}`);
+  startTelegramPolling();
 });
+
+// ---------------------------------------------------------------------
+// Telegram-канал (long polling — не требует публичного HTTPS/webhook,
+// сервер сам исходящими запросами спрашивает Telegram о новых сообщениях;
+// это специально выбрано вместо webhook, т.к. сервер живёт во внутренней
+// сети без входящего доступа снаружи)
+// ---------------------------------------------------------------------
+
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_API_BASE = process.env.TELEGRAM_API_BASE || "https://api.telegram.org";
+const TELEGRAM_API = TELEGRAM_BOT_TOKEN ? `${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}` : null;
+
+let telegramOffset = 0;
+let telegramPollingActive = false;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendTelegramMessage(chatId, text) {
+  if (!TELEGRAM_API) return;
+  try {
+    await fetch(`${TELEGRAM_API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
+  } catch (err) {
+    console.error("Ошибка отправки сообщения в Telegram:", err.message);
+  }
+}
+
+async function handleTelegramMessage(message) {
+  const chatId = message.chat.id;
+
+  if (!message.text) {
+    // Голосовые сообщения, стикеры, фото и т.д. — пока не обрабатываем.
+    // Проксирование в /voice/chat бэкенда — следующий шаг, не в этой итерации.
+    await sendTelegramMessage(chatId, "Пока я понимаю только текстовые сообщения.");
+    return;
+  }
+
+  try {
+    const backendRes = await fetch(`${BACKEND_URL}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: message.text }),
+    });
+    const data = await backendRes.json();
+    const replyText = backendRes.ok
+      ? data.answer
+      : "Извините, сервис временно недоступен. Попробуйте позже.";
+    await sendTelegramMessage(chatId, replyText);
+  } catch (err) {
+    console.error("Ошибка обработки Telegram-сообщения:", err.message);
+    await sendTelegramMessage(chatId, "Извините, сервис временно недоступен. Попробуйте позже.");
+  }
+}
+
+async function startTelegramPolling() {
+  if (!TELEGRAM_API) {
+    console.log("TELEGRAM_BOT_TOKEN не задан — Telegram-канал выключен.");
+    return;
+  }
+  if (telegramPollingActive) return;
+  telegramPollingActive = true;
+  console.log("Telegram polling запущен.");
+
+  while (telegramPollingActive) {
+    try {
+      // long polling: timeout=30 — Telegram держит соединение открытым до
+      // 30 секунд, если нет новых сообщений, вместо мгновенного пустого
+      // ответа. Это резко снижает частоту запросов по сравнению с обычным
+      // "спроси и сразу получи пустой ответ" каждую секунду.
+      const res = await fetch(`${TELEGRAM_API}/getUpdates?timeout=30&offset=${telegramOffset}`);
+      const data = await res.json();
+
+      if (!data.ok) {
+        console.error("Telegram getUpdates вернул ошибку:", data);
+        await sleep(5000);
+        continue;
+      }
+
+      for (const update of data.result) {
+        telegramOffset = update.update_id + 1;
+        if (update.message) {
+          await handleTelegramMessage(update.message);
+        }
+      }
+    } catch (err) {
+      console.error("Ошибка Telegram polling:", err.message);
+      await sleep(5000); // не долбим API при сетевых сбоях без паузы
+    }
+  }
+}
