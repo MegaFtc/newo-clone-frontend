@@ -47,6 +47,16 @@ button, input, textarea, select {
   margin-bottom: 16px;
 }
 
+.badge-restart {
+  display: inline-block;
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
