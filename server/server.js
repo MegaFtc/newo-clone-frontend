@@ -19,7 +19,10 @@ import session from "express-session";
 import fetch from "node-fetch";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import path from "path";
+import os from "os";
 import { fileURLToPath } from "url";
+import { spawn } from "child_process";
+import { writeFile, readFile, unlink } from "fs/promises";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -228,10 +231,12 @@ async function sendTelegramMessage(chatId, text) {
 async function handleTelegramMessage(message) {
   const chatId = message.chat.id;
 
+  if (message.voice) {
+    return handleTelegramVoiceMessage(chatId, message.voice);
+  }
+
   if (!message.text) {
-    // Голосовые сообщения, стикеры, фото и т.д. — пока не обрабатываем.
-    // Проксирование в /voice/chat бэкенда — следующий шаг, не в этой итерации.
-    await sendTelegramMessage(chatId, "Пока я понимаю только текстовые сообщения.");
+    await sendTelegramMessage(chatId, "Пока я понимаю только текстовые и голосовые сообщения.");
     return;
   }
 
@@ -252,11 +257,119 @@ async function handleTelegramMessage(message) {
   }
 }
 
+/**
+ * Конвертирует OGG/Opus (формат голосовых сообщений Telegram) в WAV 16kHz
+ * mono через ffmpeg — надёжнее, чем полагаться на то, что soundfile/librosa
+ * на бэкенде умеют декодировать Opus напрямую (зависит от версии libsndfile
+ * на конкретной системе, и не факт что уже установлена нужная). ffmpeg
+ * поддерживает Opus стабильно и предсказуемо в любой версии.
+ */
+function convertOggToWav(oggBuffer) {
+  return new Promise(async (resolve, reject) => {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const inPath = path.join(os.tmpdir(), `tg-voice-${stamp}.ogg`);
+    const outPath = path.join(os.tmpdir(), `tg-voice-${stamp}.wav`);
+
+    try {
+      await writeFile(inPath, oggBuffer);
+    } catch (err) {
+      return reject(err);
+    }
+
+    const proc = spawn("ffmpeg", ["-y", "-i", inPath, "-ar", "16000", "-ac", "1", outPath]);
+    let stderr = "";
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    proc.on("error", (err) => {
+      // Например ENOENT, если ffmpeg не установлен в системе
+      unlink(inPath).catch(() => {});
+      reject(new Error(`Не удалось запустить ffmpeg: ${err.message}`));
+    });
+    proc.on("close", async (code) => {
+      await unlink(inPath).catch(() => {});
+      if (code !== 0) {
+        return reject(new Error(`ffmpeg завершился с кодом ${code}: ${stderr.slice(-500)}`));
+      }
+      try {
+        const wavBuffer = await readFile(outPath);
+        await unlink(outPath).catch(() => {});
+        resolve(wavBuffer);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+async function handleTelegramVoiceMessage(chatId, voice) {
+  try {
+    // 1. getFile — узнаём путь к файлу на серверах Telegram
+    const fileInfoRes = await fetchExternal(`${TELEGRAM_API}/getFile?file_id=${voice.file_id}`);
+    const fileInfo = await fileInfoRes.json();
+    if (!fileInfo.ok) {
+      throw new Error("Telegram getFile вернул ошибку: " + JSON.stringify(fileInfo));
+    }
+
+    // 2. Скачиваем сам аудиофайл (OGG/Opus)
+    const fileUrl = `${TELEGRAM_API_BASE}/file/bot${TELEGRAM_BOT_TOKEN}/${fileInfo.result.file_path}`;
+    const fileRes = await fetchExternal(fileUrl);
+    if (!fileRes.ok) {
+      throw new Error(`Не удалось скачать файл из Telegram: HTTP ${fileRes.status}`);
+    }
+    const oggBuffer = Buffer.from(await fileRes.arrayBuffer());
+
+    // 3. OGG/Opus -> WAV 16kHz mono
+    const wavBuffer = await convertOggToWav(oggBuffer);
+
+    // 4. Отправляем в уже существующий /voice/chat бэкенда как multipart —
+    // бэкенд не меняется, используем то, что там уже есть для веб-виджета.
+    // Используем нативный fetch/FormData/Blob (Node 18+), а не node-fetch,
+    // т.к. multipart через node-fetch v3 менее предсказуем.
+    const form = new FormData();
+    form.append("file", new Blob([wavBuffer], { type: "audio/wav" }), "voice.wav");
+
+    const backendRes = await globalThis.fetch(`${BACKEND_URL}/voice/chat`, {
+      method: "POST",
+      body: form,
+    });
+    const data = await backendRes.json();
+
+    if (!backendRes.ok) {
+      throw new Error("Бэкенд вернул ошибку на /voice/chat: " + JSON.stringify(data));
+    }
+
+    await sendTelegramMessage(chatId, data.answer);
+  } catch (err) {
+    console.error("Ошибка обработки голосового сообщения Telegram:", err.message, err.cause ?? "");
+    await sendTelegramMessage(
+      chatId,
+      "Извините, не удалось обработать голосовое сообщение. Попробуйте, пожалуйста, написать текстом."
+    );
+  }
+}
+
 async function startTelegramPolling() {
   if (!TELEGRAM_API) {
     console.log("TELEGRAM_BOT_TOKEN не задан — Telegram-канал выключен.");
     return;
   }
+
+  await new Promise((resolve) => {
+    const check = spawn("ffmpeg", ["-version"]);
+    check.on("error", () => {
+      console.warn(
+        "⚠️  ffmpeg не найден в системе — голосовые сообщения Telegram обрабатываться не будут. " +
+          "Установите: sudo apt install -y ffmpeg"
+      );
+      resolve();
+    });
+    check.on("close", (code) => {
+      if (code === 0) console.log("ffmpeg найден — голосовые сообщения Telegram поддерживаются.");
+      resolve();
+    });
+  });
+
   if (telegramPollingActive) return;
   telegramPollingActive = true;
   console.log("Telegram polling запущен.");
