@@ -87,6 +87,20 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+app.delete("/api/chat/session/:sessionId", async (req, res) => {
+  try {
+    const backendRes = await fetch(
+      `${BACKEND_URL}/chat/session/${encodeURIComponent(req.params.sessionId)}`,
+      { method: "DELETE" }
+    );
+    const data = await backendRes.json();
+    res.status(backendRes.status).json(data);
+  } catch (err) {
+    console.error("Ошибка проксирования DELETE /api/chat/session:", err.message);
+    res.status(502).json({ detail: "Бэкенд недоступен: " + err.message });
+  }
+});
+
 app.get("/api/health", async (req, res) => {
   try {
     const backendRes = await fetch(`${BACKEND_URL}/health`);
@@ -184,6 +198,85 @@ app.all(/^\/api\/admin\/(?!login|logout|me).*/, requireSession, async (req, res)
 });
 
 // ---------------------------------------------------------------------
+// WhatsApp-канал (webhook — в отличие от Telegram, здесь нет long polling,
+// Meta должна сама достучаться до этого маршрута по публичному HTTPS).
+// Пока не задеплоено на проде — ждём решения ИТ/безопасности банка по
+// поводу публичного доступа. Код готов и протестирован логически.
+// ---------------------------------------------------------------------
+
+const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const WHATSAPP_API_BASE = process.env.WHATSAPP_API_BASE || "https://graph.facebook.com/v21.0";
+
+// Meta проверяет webhook именно так при настройке в консоли разработчика:
+// присылает GET с hub.verify_token, ожидает получить hub.challenge обратно.
+app.get("/webhook/whatsapp", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === WHATSAPP_VERIFY_TOKEN) {
+    console.log("WhatsApp webhook верификация пройдена.");
+    return res.status(200).send(challenge);
+  }
+  console.warn("WhatsApp webhook верификация НЕ пройдена — проверьте WHATSAPP_VERIFY_TOKEN.");
+  res.sendStatus(403);
+});
+
+async function sendWhatsAppMessage(to, text) {
+  if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) return;
+  try {
+    await fetchExternal(`${WHATSAPP_API_BASE}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        text: { body: text },
+      }),
+    });
+  } catch (err) {
+    console.error("Ошибка отправки сообщения в WhatsApp:", err.message, err.cause ?? "");
+  }
+}
+
+app.post("/webhook/whatsapp", async (req, res) => {
+  // Meta ждёт быстрый 200 OK — сначала отвечаем, обработку не блокируем ответом.
+  res.sendStatus(200);
+
+  try {
+    const entry = req.body?.entry?.[0];
+    const change = entry?.changes?.[0];
+    const message = change?.value?.messages?.[0];
+    if (!message) return; // статусы доставки и т.п. — не текстовые сообщения, пропускаем
+
+    const from = message.from; // номер телефона отправителя
+
+    if (message.type !== "text") {
+      await sendWhatsAppMessage(from, "Пока я понимаю только текстовые сообщения.");
+      return;
+    }
+
+    const backendRes = await fetch(`${BACKEND_URL}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: message.text.body, session_id: `whatsapp-${from}` }),
+    });
+    const data = await backendRes.json();
+    const replyText = backendRes.ok
+      ? data.answer
+      : "Извините, сервис временно недоступен. Попробуйте позже.";
+    await sendWhatsAppMessage(from, replyText);
+  } catch (err) {
+    console.error("Ошибка обработки WhatsApp-сообщения:", err.message, err.cause ?? "");
+  }
+});
+
+// ---------------------------------------------------------------------
 // Статика собранного React-приложения
 // ---------------------------------------------------------------------
 
@@ -244,7 +337,7 @@ async function handleTelegramMessage(message) {
     const backendRes = await fetch(`${BACKEND_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message.text }),
+      body: JSON.stringify({ message: message.text, session_id: `telegram-${chatId}` }),
     });
     const data = await backendRes.json();
     const replyText = backendRes.ok
@@ -328,12 +421,29 @@ async function handleTelegramVoiceMessage(chatId, voice) {
     // т.к. multipart через node-fetch v3 менее предсказуем.
     const form = new FormData();
     form.append("file", new Blob([wavBuffer], { type: "audio/wav" }), "voice.wav");
+    // Тот же session_id, что и у текстовых сообщений этого чата — так
+    // память диалога общая независимо от того, голосом или текстом клиент
+    // писал в разные моменты разговора.
+    form.append("session_id", `telegram-${chatId}`);
 
     const backendRes = await globalThis.fetch(`${BACKEND_URL}/voice/chat`, {
       method: "POST",
       body: form,
     });
-    const data = await backendRes.json();
+
+    // Читаем как текст сначала — если бэкенд вернул не-JSON (например,
+    // "Internal Server Error" при необработанном исключении, а не
+    // аккуратный HTTPException), увидим тело ответа целиком в логе,
+    // а не просто "не JSON" без деталей.
+    const rawBody = await backendRes.text();
+    let data;
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      throw new Error(
+        `Бэкенд вернул не-JSON ответ (статус ${backendRes.status}): ${rawBody.slice(0, 300)}`
+      );
+    }
 
     if (!backendRes.ok) {
       throw new Error("Бэкенд вернул ошибку на /voice/chat: " + JSON.stringify(data));

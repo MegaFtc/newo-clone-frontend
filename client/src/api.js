@@ -21,7 +21,9 @@ async function request(path, options = {}) {
 
 export const api = {
   // Публичное
-  chat: (message) => request("/chat", { method: "POST", body: JSON.stringify({ message }) }),
+  chat: (message, sessionId) =>
+    request("/chat", { method: "POST", body: JSON.stringify({ message, session_id: sessionId }) }),
+  clearChatSession: (sessionId) => request(`/chat/session/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
   health: () => request("/health"),
 
   // Админка
