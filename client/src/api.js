@@ -106,4 +106,9 @@ export const api = {
   listActiveCalls: () => request("/admin/telephony/calls"),
   hangupCall: (channelId) => request(`/admin/telephony/calls/${encodeURIComponent(channelId)}/hangup`, { method: "POST" }),
   triggerTestCall: () => request("/admin/telephony/test-call", { method: "POST" }),
+
+  listEscalations: (resolved) =>
+    request(`/admin/escalations${resolved === undefined ? "" : `?resolved=${resolved}`}`),
+  resolveEscalation: (id, resolved) =>
+    request(`/admin/escalations/${id}/resolve`, { method: "PUT", body: JSON.stringify({ resolved }) }),
 };
