@@ -16,12 +16,36 @@ async function request(path, options = {}) {
   const data = contentType.includes("application/json") ? await res.json() : await res.text();
 
   if (!res.ok) {
-    const detail = (data && data.detail) || `Ошибка ${res.status}`;
+    const detail = formatErrorDetail(data && data.detail, res.status);
     const err = new Error(detail);
     err.status = res.status;
     throw err;
   }
   return data;
+}
+
+/**
+ * FastAPI отдаёт detail по-разному в зависимости от типа ошибки:
+ * - обычная HTTPException -> просто строка
+ * - ошибка валидации Pydantic (422) -> СПИСОК объектов {loc, msg, type}
+ * Без этой нормализации второй случай превращался бы в "[object Object]"
+ * при простом new Error(detail) — JS молча вызывает String() на объекте.
+ */
+function formatErrorDetail(detail, status) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (item && typeof item === "object" && "msg" in item) {
+          const field = Array.isArray(item.loc) ? item.loc.at(-1) : "";
+          return field ? `${field}: ${item.msg}` : item.msg;
+        }
+        return typeof item === "string" ? item : JSON.stringify(item);
+      })
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return `Ошибка ${status}`;
 }
 
 export const api = {
