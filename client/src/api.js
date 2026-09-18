@@ -88,6 +88,11 @@ export const api = {
   },
   extractFromUrl: (url, language) =>
     request("/admin/import/extract-url", { method: "POST", body: JSON.stringify({ url, language }) }),
+  extractFromSite: (url, language, maxPages) =>
+    request("/admin/import/extract-site", {
+      method: "POST",
+      body: JSON.stringify({ url, language, max_pages: maxPages }),
+    }),
   extractFromText: (text, language) =>
     request("/admin/import/extract-text", { method: "POST", body: JSON.stringify({ text, language }) }),
   commitImport: (language, facts, entryIdPrefix) =>

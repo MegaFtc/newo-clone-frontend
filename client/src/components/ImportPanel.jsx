@@ -12,10 +12,13 @@ export default function ImportPanel({ onStatus }) {
   const [language, setLanguage] = useState("ru");
   const [file, setFile] = useState(null);
   const [url, setUrl] = useState("");
+  const [crawlSite, setCrawlSite] = useState(false);
+  const [maxPages, setMaxPages] = useState(10);
   const [rawText, setRawText] = useState("");
   const [extracting, setExtracting] = useState(false);
   const [warning, setWarning] = useState(null);
   const [sourcePreview, setSourcePreview] = useState(null);
+  const [pagesCrawled, setPagesCrawled] = useState(null);
 
   // candidates: [{ text, checked }] — то, что реально предложил LLM,
   // с чекбоксами и возможностью редактирования перед сохранением.
@@ -27,6 +30,7 @@ export default function ImportPanel({ onStatus }) {
     setWarning(null);
     setCandidates([]);
     setSourcePreview(null);
+    setPagesCrawled(null);
     try {
       let result;
       if (sourceTab === "file") {
@@ -42,7 +46,10 @@ export default function ImportPanel({ onStatus }) {
           setExtracting(false);
           return;
         }
-        result = await api.extractFromUrl(url.trim(), language);
+        result = crawlSite
+          ? await api.extractFromSite(url.trim(), language, maxPages)
+          : await api.extractFromUrl(url.trim(), language);
+        if (result.pages_crawled) setPagesCrawled(result.pages_crawled);
       } else {
         if (!rawText.trim()) {
           onStatus("Вставьте текст", true);
@@ -88,6 +95,7 @@ export default function ImportPanel({ onStatus }) {
       onStatus(`Сохранено ${res.created} фактов в базу знаний (язык: ${language})`, false);
       setCandidates([]);
       setSourcePreview(null);
+      setPagesCrawled(null);
       setFile(null);
       setUrl("");
       setRawText("");
@@ -142,7 +150,35 @@ export default function ImportPanel({ onStatus }) {
         </button>
       </div>
 
+      {sourceTab === "url" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: -8, marginBottom: 16 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="checkbox" checked={crawlSite} onChange={(e) => setCrawlSite(e.target.checked)} />
+            <span className="hint" style={{ margin: 0 }}>
+              Обойти и вкладки/подстраницы сайта (ссылки с этой страницы на тот же домен)
+            </span>
+          </label>
+          {crawlSite && (
+            <input
+              type="number"
+              min={1}
+              max={25}
+              value={maxPages}
+              onChange={(e) => setMaxPages(Number(e.target.value))}
+              style={{ width: 70 }}
+              title="Максимум страниц для обхода"
+            />
+          )}
+        </div>
+      )}
+
       {warning && <div className="alert alert-error">{warning}</div>}
+
+      {pagesCrawled && (
+        <div className="hint" style={{ marginBottom: 12 }}>
+          Обойдено страниц ({pagesCrawled.length}): {pagesCrawled.join(", ")}
+        </div>
+      )}
 
       {sourcePreview && (
         <details style={{ marginBottom: 16 }}>
