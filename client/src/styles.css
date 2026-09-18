@@ -149,6 +149,11 @@ button.secondary { background: transparent; color: var(--text); }
 }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 
+.tabs-section .tab { font-size: 15px; font-weight: 500; }
+.tabs-subtab { margin-top: -12px; margin-bottom: 20px; border-bottom-color: transparent; }
+.tabs-subtab .tab { font-size: 13px; padding: 6px 14px; }
+.tabs-subtab .tab.active { background: rgba(255, 255, 255, 0.05); border-radius: 6px 6px 0 0; }
+
 /* ---------- Login page ---------- */
 
 .login-page {

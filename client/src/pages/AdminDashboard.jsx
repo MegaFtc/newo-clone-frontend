@@ -6,25 +6,57 @@ import SettingsPanel from "../components/SettingsPanel.jsx";
 import MonitoringPanel from "../components/MonitoringPanel.jsx";
 import TelephonyPanel from "../components/TelephonyPanel.jsx";
 import EscalationsPanel from "../components/EscalationsPanel.jsx";
+import ConsolidationPanel from "../components/ConsolidationPanel.jsx";
 import { api } from "../api.js";
 
-const TABS = [
-  { id: "kb", label: "База знаний" },
-  { id: "import", label: "Импорт знаний" },
-  { id: "escalations", label: "Пробелы в знаниях" },
-  { id: "connectors", label: "Коннекторы (сторонние API)" },
-  { id: "settings", label: "Настройки" },
-  { id: "monitoring", label: "Мониторинг" },
-  { id: "telephony", label: "Телефония" },
+// Двухуровневое меню: раздел -> подвкладки внутри раздела. Раньше было
+// 8 плоских вкладок в одну строку — с ростом числа панелей это перестало
+// масштабироваться, сгруппировали по смыслу.
+const SECTIONS = [
+  {
+    id: "kb",
+    label: "📚 База знаний",
+    subTabs: [
+      { id: "view", label: "Просмотр", Component: KbPanel },
+      { id: "import", label: "Импорт", Component: ImportPanel },
+      { id: "gaps", label: "Пробелы в знаниях", Component: EscalationsPanel },
+      { id: "consolidation", label: "Консолидация", Component: ConsolidationPanel },
+    ],
+  },
+  {
+    id: "telephony",
+    label: "📞 Телефония",
+    subTabs: [{ id: "main", label: "Телефония", Component: TelephonyPanel }],
+  },
+  {
+    id: "system",
+    label: "⚙️ Система",
+    subTabs: [
+      { id: "settings", label: "Настройки", Component: SettingsPanel },
+      { id: "monitoring", label: "Мониторинг", Component: MonitoringPanel },
+      { id: "connectors", label: "Коннекторы (сторонние API)", Component: ConnectorsPanel },
+    ],
+  },
 ];
 
 export default function AdminDashboard({ username, onLogout }) {
-  const [activeTab, setActiveTab] = useState("kb");
+  const [activeSectionId, setActiveSectionId] = useState(SECTIONS[0].id);
+  const [activeSubTabId, setActiveSubTabId] = useState(SECTIONS[0].subTabs[0].id);
   const [status, setStatus] = useState(null); // { message, isError }
+
+  const activeSection = SECTIONS.find((s) => s.id === activeSectionId) || SECTIONS[0];
+  const activeSubTab =
+    activeSection.subTabs.find((t) => t.id === activeSubTabId) || activeSection.subTabs[0];
+  const ActiveComponent = activeSubTab.Component;
 
   function showStatus(message, isError) {
     setStatus({ message, isError });
     setTimeout(() => setStatus(null), 4000);
+  }
+
+  function handleSelectSection(section) {
+    setActiveSectionId(section.id);
+    setActiveSubTabId(section.subTabs[0].id); // при смене раздела — всегда на первую подвкладку
   }
 
   async function handleLogout() {
@@ -50,25 +82,36 @@ export default function AdminDashboard({ username, onLogout }) {
         <div className={"alert " + (status.isError ? "alert-error" : "alert-ok")}>{status.message}</div>
       )}
 
-      <div className="tabs">
-        {TABS.map((t) => (
+      <div className="tabs tabs-section">
+        {SECTIONS.map((s) => (
           <div
-            key={t.id}
-            className={"tab" + (activeTab === t.id ? " active" : "")}
-            onClick={() => setActiveTab(t.id)}
+            key={s.id}
+            className={"tab" + (activeSectionId === s.id ? " active" : "")}
+            onClick={() => handleSelectSection(s)}
           >
-            {t.label}
+            {s.label}
           </div>
         ))}
       </div>
 
-      {activeTab === "kb" && <KbPanel onStatus={showStatus} />}
-      {activeTab === "import" && <ImportPanel onStatus={showStatus} />}
-      {activeTab === "escalations" && <EscalationsPanel onStatus={showStatus} />}
-      {activeTab === "connectors" && <ConnectorsPanel onStatus={showStatus} />}
-      {activeTab === "settings" && <SettingsPanel onStatus={showStatus} />}
-      {activeTab === "monitoring" && <MonitoringPanel onStatus={showStatus} />}
-      {activeTab === "telephony" && <TelephonyPanel onStatus={showStatus} />}
+      {/* Подвкладки показываем только если их больше одной — для "Телефонии"
+          с единственной панелью показывать строку из одного пункта было бы
+          лишним визуальным шумом. */}
+      {activeSection.subTabs.length > 1 && (
+        <div className="tabs tabs-subtab">
+          {activeSection.subTabs.map((t) => (
+            <div
+              key={t.id}
+              className={"tab tab-sub" + (activeSubTabId === t.id ? " active" : "")}
+              onClick={() => setActiveSubTabId(t.id)}
+            >
+              {t.label}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ActiveComponent onStatus={showStatus} />
     </div>
   );
 }
