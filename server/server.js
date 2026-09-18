@@ -24,7 +24,9 @@ import { fileURLToPath } from "url";
 import { spawn, exec } from "child_process";
 import { promisify } from "util";
 import { writeFile, readFile, unlink } from "fs/promises";
+import multer from "multer";
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const execAsync = promisify(exec);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -228,6 +230,37 @@ app.get("/api/monitoring-self", requireSession, async (req, res) => {
       configured: !!(WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID),
     },
   });
+});
+
+/**
+ * Отдельный маршрут для загрузки файла при импорте знаний — общий прокси
+ * ниже всегда JSON-сериализует тело, для multipart/form-data (файл) это
+ * не подходит. Принимаем файл через multer, пересобираем в FormData и
+ * пересылаем на бэкенд — та же схема, что уже используется для голосовых
+ * сообщений Telegram.
+ */
+app.post("/api/admin/import/extract-file", requireSession, upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ detail: "Файл не передан" });
+  }
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname);
+    form.append("language", req.body.language || "ru");
+
+    const backendRes = await globalThis.fetch(`${BACKEND_URL}/admin/api/import/extract-file`, {
+      method: "POST",
+      headers: { Authorization: req.session.authHeader },
+      body: form,
+    });
+    const text = await backendRes.text();
+    res.status(backendRes.status);
+    res.set("Content-Type", backendRes.headers.get("content-type") || "application/json");
+    res.send(text);
+  } catch (err) {
+    console.error("Ошибка проксирования extract-file:", err.message);
+    res.status(502).json({ detail: "Бэкенд недоступен: " + err.message });
+  }
 });
 
 /**
