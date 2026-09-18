@@ -116,4 +116,11 @@ export const api = {
     request(`/admin/escalations${resolved === undefined ? "" : `?resolved=${resolved}`}`),
   resolveEscalation: (id, resolved) =>
     request(`/admin/escalations/${id}/resolve`, { method: "PUT", body: JSON.stringify({ resolved }) }),
+
+  analyzeConsolidation: (language) =>
+    request("/admin/kb/consolidation/analyze", { method: "POST", body: JSON.stringify({ language: language || null }) }),
+  listConsolidationSuggestions: (status) =>
+    request(`/admin/kb/consolidation-suggestions${status === undefined ? "" : `?status=${status}`}`),
+  approveConsolidation: (id) => request(`/admin/kb/consolidation-suggestions/${id}/approve`, { method: "POST" }),
+  rejectConsolidation: (id) => request(`/admin/kb/consolidation-suggestions/${id}/reject`, { method: "POST" }),
 };
