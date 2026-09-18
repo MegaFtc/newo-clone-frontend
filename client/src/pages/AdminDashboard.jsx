@@ -5,11 +5,13 @@ import ConnectorsPanel from "../components/ConnectorsPanel.jsx";
 import SettingsPanel from "../components/SettingsPanel.jsx";
 import MonitoringPanel from "../components/MonitoringPanel.jsx";
 import TelephonyPanel from "../components/TelephonyPanel.jsx";
+import EscalationsPanel from "../components/EscalationsPanel.jsx";
 import { api } from "../api.js";
 
 const TABS = [
   { id: "kb", label: "База знаний" },
   { id: "import", label: "Импорт знаний" },
+  { id: "escalations", label: "Пробелы в знаниях" },
   { id: "connectors", label: "Коннекторы (сторонние API)" },
   { id: "settings", label: "Настройки" },
   { id: "monitoring", label: "Мониторинг" },
@@ -62,6 +64,7 @@ export default function AdminDashboard({ username, onLogout }) {
 
       {activeTab === "kb" && <KbPanel onStatus={showStatus} />}
       {activeTab === "import" && <ImportPanel onStatus={showStatus} />}
+      {activeTab === "escalations" && <EscalationsPanel onStatus={showStatus} />}
       {activeTab === "connectors" && <ConnectorsPanel onStatus={showStatus} />}
       {activeTab === "settings" && <SettingsPanel onStatus={showStatus} />}
       {activeTab === "monitoring" && <MonitoringPanel onStatus={showStatus} />}
