@@ -46,4 +46,8 @@ export const api = {
   getSettings: () => request("/admin/settings"),
   setSetting: (key, value) =>
     request(`/admin/settings/${encodeURIComponent(key)}`, { method: "PUT", body: JSON.stringify({ value }) }),
+
+  getMonitoring: () => request("/admin/monitoring"),
+  testLLM: () => request("/admin/monitoring/test-llm", { method: "POST" }),
+  getMonitoringSelf: () => request("/monitoring-self"),
 };

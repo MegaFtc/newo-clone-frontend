@@ -21,8 +21,11 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import path from "path";
 import os from "os";
 import { fileURLToPath } from "url";
-import { spawn } from "child_process";
+import { spawn, exec } from "child_process";
+import { promisify } from "util";
 import { writeFile, readFile, unlink } from "fs/promises";
+
+const execAsync = promisify(exec);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -170,6 +173,64 @@ function requireSession(req, res, next) {
 }
 
 /**
+ * Метрики самого этого Node-сервера + физического сервера, на котором он
+ * крутится, + статус Telegram-поллинга. Отдельно от бэкендовского
+ * /admin/api/monitoring (тот — про Python-процесс и его сервер).
+ */
+app.get("/api/monitoring-self", requireSession, async (req, res) => {
+  let disk = null;
+  try {
+    // df -k / выводит заголовок + одну строку данных; парсим просто по
+    // позициям колонок (Filesystem, 1K-blocks, Used, Available, Use%, Mounted)
+    const { stdout } = await execAsync("df -k /");
+    const lines = stdout.trim().split("\n");
+    const cols = lines[lines.length - 1].split(/\s+/);
+    const totalKb = parseInt(cols[1], 10);
+    const usedKb = parseInt(cols[2], 10);
+    disk = {
+      total_gb: Math.round((totalKb / 1024 / 1024) * 100) / 100,
+      used_gb: Math.round((usedKb / 1024 / 1024) * 100) / 100,
+      percent: parseInt(cols[4], 10) || null,
+    };
+  } catch (err) {
+    disk = { error: err.message };
+  }
+
+  let backendReachable = false;
+  try {
+    const backendRes = await fetch(`${BACKEND_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    backendReachable = backendRes.ok;
+  } catch {
+    backendReachable = false;
+  }
+
+  res.json({
+    node: {
+      uptime_seconds: Math.round((Date.now() - serverStartTime) / 1000),
+      pid: process.pid,
+      memory_mb: Math.round((process.memoryUsage().rss / 1024 / 1024) * 10) / 10,
+      node_version: process.version,
+    },
+    system: {
+      load_average: os.loadavg(),
+      free_memory_gb: Math.round((os.freemem() / 1024 ** 3) * 100) / 100,
+      total_memory_gb: Math.round((os.totalmem() / 1024 ** 3) * 100) / 100,
+      disk,
+    },
+    backend_reachable: backendReachable,
+    telegram: {
+      configured: !!TELEGRAM_BOT_TOKEN,
+      last_success_at: telegramLastSuccessAt,
+      last_error_at: telegramLastErrorAt,
+      last_error: telegramLastError,
+    },
+    whatsapp: {
+      configured: !!(WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID),
+    },
+  });
+});
+
+/**
  * Универсальный прокси: /api/admin/<путь> -> BACKEND_URL/admin/api/<путь>,
  * с подстановкой Basic Auth из серверной сессии. Один обработчик на все
  * методы и вложенные пути — не плодим по функции на каждый CRUD-эндпоинт.
@@ -303,6 +364,10 @@ const TELEGRAM_API = TELEGRAM_BOT_TOKEN ? `${TELEGRAM_API_BASE}/bot${TELEGRAM_BO
 
 let telegramOffset = 0;
 let telegramPollingActive = false;
+let telegramLastSuccessAt = null; // Date.toISOString() последнего успешного опроса
+let telegramLastErrorAt = null;
+let telegramLastError = null;
+const serverStartTime = Date.now();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -495,9 +560,13 @@ async function startTelegramPolling() {
 
       if (!data.ok) {
         console.error("Telegram getUpdates вернул ошибку:", data);
+        telegramLastErrorAt = new Date().toISOString();
+        telegramLastError = JSON.stringify(data);
         await sleep(5000);
         continue;
       }
+
+      telegramLastSuccessAt = new Date().toISOString();
 
       for (const update of data.result) {
         telegramOffset = update.update_id + 1;
@@ -507,6 +576,8 @@ async function startTelegramPolling() {
       }
     } catch (err) {
       console.error("Ошибка Telegram polling:", err.message, err.cause ?? "");
+      telegramLastErrorAt = new Date().toISOString();
+      telegramLastError = err.message;
       await sleep(5000); // не долбим API при сетевых сбоях без паузы
     }
   }

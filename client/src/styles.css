@@ -193,3 +193,38 @@ button.secondary { background: transparent; color: var(--text); }
   display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border);
 }
 .chat-input-row input { flex: 1; }
+
+/* ---------- Мониторинг ---------- */
+.monitoring-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.monitor-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.monitor-card h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--text);
+}
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.metric-label { color: var(--muted); }
+.metric-value { font-weight: 500; text-align: right; word-break: break-word; }
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.status-ok { background: var(--success); }
+.status-bad { background: var(--danger); }
