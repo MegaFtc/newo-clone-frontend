@@ -1,9 +1,14 @@
 const BASE = "/api";
 
 async function request(path, options = {}) {
+  const isFormData = options.body instanceof FormData;
+  const headers = isFormData
+    ? { ...(options.headers || {}) } // не выставляем Content-Type сами — fetch сам проставит верный boundary для multipart
+    : { "Content-Type": "application/json", ...(options.headers || {}) };
+
   const res = await fetch(BASE + path, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers,
     ...options,
   });
 
@@ -50,4 +55,31 @@ export const api = {
   getMonitoring: () => request("/admin/monitoring"),
   testLLM: () => request("/admin/monitoring/test-llm", { method: "POST" }),
   getMonitoringSelf: () => request("/monitoring-self"),
+
+  extractFromFile: (file, language) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("language", language);
+    return request("/admin/import/extract-file", { method: "POST", body: form });
+  },
+  extractFromUrl: (url, language) =>
+    request("/admin/import/extract-url", { method: "POST", body: JSON.stringify({ url, language }) }),
+  extractFromText: (text, language) =>
+    request("/admin/import/extract-text", { method: "POST", body: JSON.stringify({ text, language }) }),
+  commitImport: (language, facts, entryIdPrefix) =>
+    request("/admin/import/commit", {
+      method: "POST",
+      body: JSON.stringify({ language, facts, entry_id_prefix: entryIdPrefix }),
+    }),
+
+  listOperators: () => request("/admin/telephony/operators"),
+  createOperator: (extension_number, label) =>
+    request("/admin/telephony/operators", { method: "POST", body: JSON.stringify({ extension_number, label }) }),
+  toggleOperator: (id, enabled) =>
+    request(`/admin/telephony/operators/${id}/toggle`, { method: "PUT", body: JSON.stringify({ enabled }) }),
+  deleteOperator: (id) => request(`/admin/telephony/operators/${id}`, { method: "DELETE" }),
+  applyOperators: () => request("/admin/telephony/operators/apply", { method: "POST" }),
+  listActiveCalls: () => request("/admin/telephony/calls"),
+  hangupCall: (channelId) => request(`/admin/telephony/calls/${encodeURIComponent(channelId)}/hangup`, { method: "POST" }),
+  triggerTestCall: () => request("/admin/telephony/test-call", { method: "POST" }),
 };
