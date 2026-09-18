@@ -1,6 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
 
+const REASON_LABELS = {
+  escalated: "Эскалация",
+  not_grounded: "Не подтверждено фактами",
+  deflection: "Отфутболивание",
+};
+
 const FILTERS = [
   { id: "unresolved", label: "Не обработано", value: false },
   { id: "resolved", label: "Обработано", value: true },
@@ -66,6 +72,7 @@ export default function EscalationsPanel({ onStatus }) {
               <th style={{ width: 70 }}>Канал</th>
               <th>Вопрос клиента</th>
               <th>Ответ бота</th>
+              <th style={{ width: 140 }}>Причина</th>
               <th style={{ width: 70 }}>Увер.</th>
               <th style={{ width: 100 }}>Действия</th>
             </tr>
@@ -84,6 +91,7 @@ export default function EscalationsPanel({ onStatus }) {
                     </div>
                   )}
                 </td>
+                <td>{REASON_LABELS[e.reason] || e.reason}</td>
                 <td>{Math.round(e.confidence * 100)}%</td>
                 <td className="row-actions">
                   {e.resolved ? (
