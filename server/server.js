@@ -44,9 +44,32 @@ const CLIENT_DIST = process.env.CLIENT_DIST || path.join(__dirname, "..", "clien
 // локальный трафик через внешний прокси-сервер.
 const EXTERNAL_PROXY = process.env.HTTPS_PROXY || process.env.https_proxy || null;
 const externalProxyAgent = EXTERNAL_PROXY ? new HttpsProxyAgent(EXTERNAL_PROXY) : undefined;
+const EXTERNAL_DEFAULT_TIMEOUT_MS = 30_000;
+// getUpdates — long polling: Telegram сам держит соединение до 30 с, поэтому
+// клиентский таймаут должен быть заметно больше этих 30 с.
+const TELEGRAM_POLL_TIMEOUT_MS = Number(process.env.TELEGRAM_POLL_TIMEOUT_MS) || 45_000;
 
 function fetchExternal(url, options = {}) {
-  return fetch(url, { ...options, agent: externalProxyAgent });
+  // Клиентский таймаут обязателен: без него запрос через корпоративный прокси
+  // может "зависнуть" навсегда, если прокси молча оборвал соединение (TCP
+  // half-open). Цикл опроса Telegram тогда тихо останавливается — без
+  // ошибок в логе, бот просто перестаёт отвечать.
+  const { timeoutMs = EXTERNAL_DEFAULT_TIMEOUT_MS, ...rest } = options;
+  return fetch(url, { ...rest, agent: externalProxyAgent, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+/**
+ * Node вставляет полный URL запроса (а в нём токен бота: /bot<id>:<secret>/)
+ * в текст сетевых ошибок. Без этой чистки токен попадал в journalctl и в
+ * панель мониторинга (last_error). Вызывать для ЛЮБОГО текста ошибки,
+ * который выводится в лог или отдаётся наружу.
+ */
+function redactSecrets(text) {
+  let out = String(text ?? "");
+  out = out.replace(/bot\d+:[A-Za-z0-9_-]+/g, "bot***");
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (token) out = out.split(token).join("***");
+  return out;
 }
 
 if (!SESSION_SECRET) {
@@ -415,7 +438,7 @@ async function sendTelegramMessage(chatId, text) {
       body: JSON.stringify({ chat_id: chatId, text }),
     });
   } catch (err) {
-    console.error("Ошибка отправки сообщения в Telegram:", err.message, err.cause ?? "");
+    console.error("Ошибка отправки сообщения в Telegram:", redactSecrets(err.message), redactSecrets(err.cause ?? ""));
   }
 }
 
@@ -443,7 +466,7 @@ async function handleTelegramMessage(message) {
       : "Извините, сервис временно недоступен. Попробуйте позже.";
     await sendTelegramMessage(chatId, replyText);
   } catch (err) {
-    console.error("Ошибка обработки Telegram-сообщения:", err.message, err.cause ?? "");
+    console.error("Ошибка обработки Telegram-сообщения:", redactSecrets(err.message), redactSecrets(err.cause ?? ""));
     await sendTelegramMessage(chatId, "Извините, сервис временно недоступен. Попробуйте позже.");
   }
 }
@@ -549,7 +572,7 @@ async function handleTelegramVoiceMessage(chatId, voice) {
 
     await sendTelegramMessage(chatId, data.answer);
   } catch (err) {
-    console.error("Ошибка обработки голосового сообщения Telegram:", err.message, err.cause ?? "");
+    console.error("Ошибка обработки голосового сообщения Telegram:", redactSecrets(err.message), redactSecrets(err.cause ?? ""));
     await sendTelegramMessage(
       chatId,
       "Извините, не удалось обработать голосовое сообщение. Попробуйте, пожалуйста, написать текстом."
@@ -588,7 +611,9 @@ async function startTelegramPolling() {
       // 30 секунд, если нет новых сообщений, вместо мгновенного пустого
       // ответа. Это резко снижает частоту запросов по сравнению с обычным
       // "спроси и сразу получи пустой ответ" каждую секунду.
-      const res = await fetchExternal(`${TELEGRAM_API}/getUpdates?timeout=30&offset=${telegramOffset}`);
+      const res = await fetchExternal(`${TELEGRAM_API}/getUpdates?timeout=30&offset=${telegramOffset}`, {
+        timeoutMs: TELEGRAM_POLL_TIMEOUT_MS,
+      });
       const data = await res.json();
 
       if (!data.ok) {
@@ -608,9 +633,13 @@ async function startTelegramPolling() {
         }
       }
     } catch (err) {
-      console.error("Ошибка Telegram polling:", err.message, err.cause ?? "");
+      const reason =
+        err.name === "AbortError"
+          ? `таймаут запроса (нет ответа за ${TELEGRAM_POLL_TIMEOUT_MS} мс) — соединение через прокси, скорее всего, оборвалось молча`
+          : redactSecrets(err.message);
+      console.error("Ошибка Telegram polling:", reason, redactSecrets(err.cause ?? ""));
       telegramLastErrorAt = new Date().toISOString();
-      telegramLastError = err.message;
+      telegramLastError = reason;
       await sleep(5000); // не долбим API при сетевых сбоях без паузы
     }
   }
