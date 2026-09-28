@@ -233,3 +233,13 @@ button.secondary { background: transparent; color: var(--text); }
 }
 .status-ok { background: var(--success); }
 .status-bad { background: var(--danger); }
+
+/* ---------- Голос и имя бота ---------- */
+
+.voice-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.voice-row .voice-main { flex: 1; }
+.badge-gender {
+  display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--border); color: var(--muted); vertical-align: middle;
+}
+.badge-current { color: var(--text); border-color: var(--accent); }

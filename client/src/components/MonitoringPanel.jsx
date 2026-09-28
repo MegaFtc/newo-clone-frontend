@@ -23,6 +23,18 @@ function Card({ title, children }) {
   );
 }
 
+/**
+ * Текст тревоги "Telegram молчит" — общий для карточки мониторинга и для
+ * плашки в шапке админки. Признак stale считает СЕРВЕР по своим часам (см.
+ * getTelegramHealth в server.js), здесь только форматирование.
+ */
+export function describeTelegramSilence(t) {
+  const since = t.seconds_since_last_success;
+  const when = since === null ? "с момента запуска сервиса" : `уже ${Math.max(1, Math.round(since / 60))} мин`;
+  const reason = t.last_error ? ` Последняя ошибка: ${t.last_error}.` : "";
+  return `Telegram-бот не получает сообщения ${when}.${reason} Проверьте токен бота и доступ к api.telegram.org через прокси.`;
+}
+
 export default function MonitoringPanel({ onStatus }) {
   const [backend, setBackend] = useState(null);
   const [self, setSelf] = useState(null);
@@ -155,11 +167,17 @@ export default function MonitoringPanel({ onStatus }) {
         <MetricRow label="Telegram настроен" value={<StatusDot ok={self.telegram.configured} />} />
         {self.telegram.configured && (
           <>
+            <MetricRow label="Telegram принимает сообщения" value={<StatusDot ok={!self.telegram.stale} />} />
             <MetricRow label="Последний успешный опрос" value={self.telegram.last_success_at || "ещё не было"} />
             {self.telegram.last_error_at && (
               <MetricRow label="Последняя ошибка" value={`${self.telegram.last_error_at}: ${self.telegram.last_error}`} />
             )}
           </>
+        )}
+        {self.telegram.stale && (
+          <div className="alert alert-error" style={{ marginTop: 8 }}>
+            ⚠ {describeTelegramSilence(self.telegram)}
+          </div>
         )}
         <MetricRow label="WhatsApp настроен" value={<StatusDot ok={self.whatsapp.configured} />} />
       </Card>

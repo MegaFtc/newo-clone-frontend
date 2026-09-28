@@ -48,6 +48,9 @@ const EXTERNAL_DEFAULT_TIMEOUT_MS = 30_000;
 // getUpdates — long polling: Telegram сам держит соединение до 30 с, поэтому
 // клиентский таймаут должен быть заметно больше этих 30 с.
 const TELEGRAM_POLL_TIMEOUT_MS = Number(process.env.TELEGRAM_POLL_TIMEOUT_MS) || 45_000;
+// Здоровый опрос обновляет "последний успех" каждые ≤30 с (long polling даже
+// без новых сообщений возвращает ok:true). 120 с — четыре пропущенных цикла.
+const TELEGRAM_STALE_AFTER_SEC = Number(process.env.TELEGRAM_STALE_AFTER_SEC) || 120;
 
 function fetchExternal(url, options = {}) {
   // Клиентский таймаут обязателен: без него запрос через корпоративный прокси
@@ -56,6 +59,28 @@ function fetchExternal(url, options = {}) {
   // ошибок в логе, бот просто перестаёт отвечать.
   const { timeoutMs = EXTERNAL_DEFAULT_TIMEOUT_MS, ...rest } = options;
   return fetch(url, { ...rest, agent: externalProxyAgent, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+/**
+ * Молчит ли Telegram-опрос. Считаем на сервере, по часам этого же процесса:
+ * у серверов уже наблюдался дрейф часов в 13 минут, поэтому сравнивать
+ * временную метку с часами браузера нельзя — были бы ложные тревоги.
+ */
+function getTelegramHealth() {
+  const base = { stale_after_seconds: TELEGRAM_STALE_AFTER_SEC };
+  if (!TELEGRAM_BOT_TOKEN) {
+    return { ...base, configured: false, stale: false, seconds_since_last_success: null };
+  }
+  const now = Date.now();
+  const sinceSuccess = telegramLastSuccessAt
+    ? Math.max(0, Math.round((now - Date.parse(telegramLastSuccessAt)) / 1000))
+    : null;
+  const sinceStart = Math.round((now - serverStartTime) / 1000);
+  // Пока успешных опросов ещё не было, "молчанием" это считаем только если
+  // сервис уже работает дольше порога: сразу после старта первый getUpdates
+  // ещё висит (до 30 с), это нормально.
+  const stale = sinceSuccess !== null ? sinceSuccess > TELEGRAM_STALE_AFTER_SEC : sinceStart > TELEGRAM_STALE_AFTER_SEC;
+  return { ...base, configured: true, stale, seconds_since_last_success: sinceSuccess };
 }
 
 /**
@@ -127,6 +152,23 @@ app.delete("/api/chat/session/:sessionId", async (req, res) => {
     console.error("Ошибка проксирования DELETE /api/chat/session:", err.message);
     res.status(502).json({ detail: "Бэкенд недоступен: " + err.message });
   }
+});
+
+/**
+ * Для внешних систем мониторинга: 200 если Telegram-опрос жив, 503 если молчит.
+ * Без авторизации (как и /api/health), поэтому отдаёт только статус и число
+ * секунд — без текста ошибок и без каких-либо данных о клиентах.
+ */
+app.get("/api/health/telegram", (req, res) => {
+  const h = getTelegramHealth();
+  if (!h.configured) {
+    return res.json({ status: "not_configured" });
+  }
+  res.status(h.stale ? 503 : 200).json({
+    status: h.stale ? "stale" : "ok",
+    seconds_since_last_success: h.seconds_since_last_success,
+    stale_after_seconds: h.stale_after_seconds,
+  });
 });
 
 app.get("/api/health", async (req, res) => {
@@ -244,7 +286,7 @@ app.get("/api/monitoring-self", requireSession, async (req, res) => {
     },
     backend_reachable: backendReachable,
     telegram: {
-      configured: !!TELEGRAM_BOT_TOKEN,
+      ...getTelegramHealth(),
       last_success_at: telegramLastSuccessAt,
       last_error_at: telegramLastErrorAt,
       last_error: telegramLastError,
@@ -304,10 +346,13 @@ app.all(/^\/api\/admin\/(?!login|logout|me).*/, requireSession, async (req, res)
 
   try {
     const backendRes = await fetch(`${BACKEND_URL}${backendPath}`, init);
-    const text = await backendRes.text();
+    // Читаем ответ как БАЙТЫ, а не как текст: иначе бинарные ответы (звук из
+    // "Прослушать" в админке) портились бы декодированием в UTF-8. JSON и
+    // обычный текст при этом передаются теми же байтами, что и раньше.
+    const body = Buffer.from(await backendRes.arrayBuffer());
     res.status(backendRes.status);
     res.set("Content-Type", backendRes.headers.get("content-type") || "application/json");
-    res.send(text);
+    res.send(body);
   } catch (err) {
     console.error("Ошибка проксирования", backendPath, ":", err.message);
     res.status(502).json({ detail: "Бэкенд недоступен: " + err.message });

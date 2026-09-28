@@ -117,6 +117,36 @@ export const api = {
   resolveEscalation: (id, resolved) =>
     request(`/admin/escalations/${id}/resolve`, { method: "PUT", body: JSON.stringify({ resolved }) }),
 
+  getVoiceCatalog: () => request("/admin/voice/catalog"),
+  listPronunciations: () => request("/admin/voice/pronunciations"),
+  createPronunciation: (pattern, replacement) =>
+    request("/admin/voice/pronunciations", { method: "POST", body: JSON.stringify({ pattern, replacement }) }),
+  updatePronunciation: (id, replacement, enabled) =>
+    request(`/admin/voice/pronunciations/${id}`, { method: "PUT", body: JSON.stringify({ replacement, enabled }) }),
+  deletePronunciation: (id) => request(`/admin/voice/pronunciations/${id}`, { method: "DELETE" }),
+  applyPhonePrompts: () => request("/admin/voice/apply-phone-prompts", { method: "POST" }),
+  // Озвучивание для "Прослушать": ответ — звук (WAV), а не JSON, поэтому не через request()
+  previewVoice: async (params) => {
+    const res = await fetch(BASE + "/admin/voice/preview", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        /* тело не JSON — используем общее сообщение по статусу */
+      }
+      const err = new Error(formatErrorDetail(data && data.detail, res.status));
+      err.status = res.status;
+      throw err;
+    }
+    return res.blob();
+  },
+
   analyzeConsolidation: (language) =>
     request("/admin/kb/consolidation/analyze", { method: "POST", body: JSON.stringify({ language: language || null }) }),
   listConsolidationSuggestions: (status) =>
