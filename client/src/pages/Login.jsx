@@ -13,7 +13,7 @@ export default function Login({ onLoggedIn }) {
     setLoading(true);
     try {
       const data = await api.login(username, password);
-      onLoggedIn(data.username);
+      onLoggedIn(data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -24,7 +24,7 @@ export default function Login({ onLoggedIn }) {
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>Вход в админ-панель</h1>
+        <h1>Вход для сотрудников</h1>
         {error && <div className="alert alert-error">{error}</div>}
         <label>
           Логин

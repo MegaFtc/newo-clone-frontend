@@ -195,9 +195,11 @@ app.post("/api/admin/login", async (req, res) => {
 
   let backendRes;
   try {
-    // Пробный запрос к защищённому эндпоинту бэкенда — так проверяем
-    // креды, не дублируя логику проверки пароля здесь.
-    backendRes = await fetch(`${BACKEND_URL}/admin/api/kb`, {
+    // Пробный POST к /admin/api/me/login: бэкенд сам проверяет логин и пароль
+    // (учётные записи сотрудников и аварийный админ из .env), отмечает время
+    // входа и пишет событие в журнал, а в ответе возвращает роль.
+    backendRes = await fetch(`${BACKEND_URL}/admin/api/me/login`, {
+      method: "POST",
       headers: { Authorization: authHeader },
     });
   } catch (err) {
@@ -207,29 +209,61 @@ app.post("/api/admin/login", async (req, res) => {
   if (backendRes.status === 401) {
     return res.status(401).json({ detail: "Неверный логин или пароль" });
   }
+  if (backendRes.status === 429) {
+    return res
+      .status(429)
+      .json({ detail: "Слишком много неудачных попыток входа. Подождите несколько минут и повторите." });
+  }
   if (backendRes.status === 503) {
     return res
       .status(503)
-      .json({ detail: "Админка не настроена на бэкенде (нет ADMIN_USERNAME/ADMIN_PASSWORD)" });
+      .json({ detail: "Вход не настроен на бэкенде (нет ADMIN_USERNAME/ADMIN_PASSWORD и нет сотрудников)" });
   }
   if (!backendRes.ok) {
     return res.status(502).json({ detail: `Бэкенд вернул неожиданный статус ${backendRes.status}` });
   }
 
-  req.session.authHeader = authHeader;
-  req.session.username = username;
-  res.json({ status: "ok", username });
+  const profile = await backendRes.json();
+
+  // Новый идентификатор сессии при входе: защита от подмены сессии (session fixation).
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error("Не удалось создать сессию:", err.message);
+      return res.status(500).json({ detail: "Не удалось создать сессию" });
+    }
+    req.session.authHeader = authHeader;
+    req.session.username = profile.username;
+    req.session.role = profile.role;
+    res.json({ status: "ok", ...profile });
+  });
 });
 
 app.post("/api/admin/logout", (req, res) => {
   req.session.destroy(() => res.json({ status: "ok" }));
 });
 
-app.get("/api/admin/me", (req, res) => {
+// Профиль берём у бэкенда при каждом вызове, а не из сессии: роль могли
+// изменить, а пользователя заблокировать уже после входа.
+app.get("/api/admin/me", async (req, res) => {
   if (!req.session.authHeader) {
     return res.status(401).json({ detail: "Не авторизован" });
   }
-  res.json({ username: req.session.username });
+  try {
+    const backendRes = await fetch(`${BACKEND_URL}/admin/api/me`, {
+      headers: { Authorization: req.session.authHeader },
+    });
+    if (backendRes.status === 401 || backendRes.status === 429) {
+      return endSession(req, res);
+    }
+    if (!backendRes.ok) {
+      return res.status(502).json({ detail: `Бэкенд вернул неожиданный статус ${backendRes.status}` });
+    }
+    const profile = await backendRes.json();
+    req.session.role = profile.role;
+    res.json(profile);
+  } catch (err) {
+    res.status(502).json({ detail: "Бэкенд недоступен: " + err.message });
+  }
 });
 
 function requireSession(req, res, next) {
@@ -239,12 +273,33 @@ function requireSession(req, res, next) {
   next();
 }
 
+// Маршруты самого Node-сервера (не проксируемые на бэкенд) проверяют роль
+// сами; для проксируемых роль проверяет бэкенд.
+function requireAdminSession(req, res, next) {
+  if (!req.session.authHeader) {
+    return res.status(401).json({ detail: "Не авторизован" });
+  }
+  if (req.session.role !== "admin") {
+    return res.status(403).json({ detail: "Недостаточно прав для этого действия" });
+  }
+  next();
+}
+
+// Бэкенд ответил 401: пароль сотрудника сменили или учётную запись заблокировали.
+// Сессия с устаревшими данными бесполезна и только плодила бы неудачные попытки
+// входа (а они ведут к блокировке), поэтому закрываем её сразу.
+function endSession(req, res) {
+  req.session.destroy(() =>
+    res.status(401).json({ detail: "Сессия закончилась: пароль изменён или доступ закрыт. Войдите заново." })
+  );
+}
+
 /**
  * Метрики самого этого Node-сервера + физического сервера, на котором он
  * крутится, + статус Telegram-поллинга. Отдельно от бэкендовского
  * /admin/api/monitoring (тот — про Python-процесс и его сервер).
  */
-app.get("/api/monitoring-self", requireSession, async (req, res) => {
+app.get("/api/monitoring-self", requireAdminSession, async (req, res) => {
   let disk = null;
   try {
     // df -k / выводит заголовок + одну строку данных; парсим просто по
@@ -318,6 +373,7 @@ app.post("/api/admin/import/extract-file", requireSession, upload.single("file")
       headers: { Authorization: req.session.authHeader },
       body: form,
     });
+    if (backendRes.status === 401) return endSession(req, res);
     const text = await backendRes.text();
     res.status(backendRes.status);
     res.set("Content-Type", backendRes.headers.get("content-type") || "application/json");
@@ -333,7 +389,7 @@ app.post("/api/admin/import/extract-file", requireSession, upload.single("file")
  * с подстановкой Basic Auth из серверной сессии. Один обработчик на все
  * методы и вложенные пути — не плодим по функции на каждый CRUD-эндпоинт.
  */
-app.all(/^\/api\/admin\/(?!login|logout|me).*/, requireSession, async (req, res) => {
+app.all(/^\/api\/admin\/(?!(?:login|logout|me)(?:\?|$)).*/, requireSession, async (req, res) => {
   const backendPath = req.originalUrl.replace(/^\/api\/admin/, "/admin/api");
   const init = {
     method: req.method,
@@ -346,6 +402,7 @@ app.all(/^\/api\/admin\/(?!login|logout|me).*/, requireSession, async (req, res)
 
   try {
     const backendRes = await fetch(`${BACKEND_URL}${backendPath}`, init);
+    if (backendRes.status === 401) return endSession(req, res);
     // Читаем ответ как БАЙТЫ, а не как текст: иначе бинарные ответы (звук из
     // "Прослушать" в админке) портились бы декодированием в UTF-8. JSON и
     // обычный текст при этом передаются теми же байтами, что и раньше.

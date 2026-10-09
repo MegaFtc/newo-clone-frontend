@@ -61,6 +61,17 @@ export const api = {
   logout: () => request("/admin/logout", { method: "POST" }),
   me: () => request("/admin/me"),
 
+  // Сотрудники, роли, журнал (права проверяются на бэкенде по роли)
+  changeMyPassword: (current_password, new_password) =>
+    request("/admin/me/password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),
+  listUsers: () => request("/admin/users"),
+  createUser: (user) => request("/admin/users", { method: "POST", body: JSON.stringify(user) }),
+  updateUser: (id, user) => request(`/admin/users/${id}`, { method: "PUT", body: JSON.stringify(user) }),
+  resetUserPassword: (id, password) =>
+    request(`/admin/users/${id}/password`, { method: "POST", body: JSON.stringify({ password }) }),
+  deleteUser: (id) => request(`/admin/users/${id}`, { method: "DELETE" }),
+  listAudit: (action) => request("/admin/audit" + (action ? `?action=${encodeURIComponent(action)}` : "")),
+
   listKb: (language) => request("/admin/kb" + (language ? `?language=${encodeURIComponent(language)}` : "")),
   createKb: (entry) => request("/admin/kb", { method: "POST", body: JSON.stringify(entry) }),
   updateKb: (id, text) => request(`/admin/kb/${id}`, { method: "PUT", body: JSON.stringify({ text }) }),

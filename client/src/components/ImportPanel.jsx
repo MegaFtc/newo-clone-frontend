@@ -7,7 +7,10 @@ const SOURCE_TABS = [
   { id: "text", label: "Вставить текст" },
 ];
 
-export default function ImportPanel({ onStatus }) {
+export default function ImportPanel({ onStatus, profile }) {
+  // Импорт по ссылке/с сайта: сервер сам делает запрос на указанный адрес, поэтому
+  // он оставлен администратору (иначе через него можно прощупывать внутреннюю сеть).
+  const sourceTabs = profile && profile.role !== "admin" ? SOURCE_TABS.filter((t) => t.id !== "url") : SOURCE_TABS;
   const [sourceTab, setSourceTab] = useState("file");
   const [language, setLanguage] = useState("ru");
   const [file, setFile] = useState(null);
@@ -116,7 +119,7 @@ export default function ImportPanel({ onStatus }) {
       </p>
 
       <div className="tabs" style={{ marginBottom: 16 }}>
-        {SOURCE_TABS.map((t) => (
+        {sourceTabs.map((t) => (
           <div
             key={t.id}
             className={"tab" + (sourceTab === t.id ? " active" : "")}

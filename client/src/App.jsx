@@ -7,19 +7,19 @@ import { api } from "./api.js";
 
 function useAdminSession() {
   const [status, setStatus] = useState("checking"); // checking | authed | anonymous
-  const [username, setUsername] = useState(null);
+  const [profile, setProfile] = useState(null); // { username, display_name, role, role_label, is_env_admin }
 
   useEffect(() => {
     api
       .me()
       .then((data) => {
-        setUsername(data.username);
+        setProfile(data);
         setStatus("authed");
       })
       .catch(() => setStatus("anonymous"));
   }, []);
 
-  return { status, username, setStatus, setUsername };
+  return { status, profile, setStatus, setProfile };
 }
 
 function AdminGate() {
@@ -31,8 +31,8 @@ function AdminGate() {
   if (session.status === "anonymous") {
     return (
       <Login
-        onLoggedIn={(u) => {
-          session.setUsername(u);
+        onLoggedIn={(data) => {
+          session.setProfile(data);
           session.setStatus("authed");
         }}
       />
@@ -40,7 +40,7 @@ function AdminGate() {
   }
   return (
     <AdminDashboard
-      username={session.username}
+      profile={session.profile}
       onLogout={() => session.setStatus("anonymous")}
     />
   );
